@@ -596,8 +596,8 @@ class Worker(WorkerBase):
 
         # Clean up model runner and free GPU memory
         if hasattr(self, "model_runner") and self.model_runner is not None:
+            # Step 1: Clear CUDA graphs and unwrap model
             try:
-                # Clear CUDA graphs first (they hold references to GPU memory)
                 if hasattr(self.model_runner, "model") and self.model_runner.model is not None:
                     model = self.model_runner.model
 
@@ -610,6 +610,8 @@ class Worker(WorkerBase):
                         logger.info("Unwrapping UBatchWrapper")
                         if hasattr(model, "unwrap"):
                             model = model.unwrap()
+                            # CRITICAL: Update the reference so we work with unwrapped model
+                            self.model_runner.model = model
 
                     # Clear CUDA graphs if model is wrapped in CUDAGraphWrapper
                     if isinstance(model, CUDAGraphWrapper):
@@ -628,30 +630,36 @@ class Worker(WorkerBase):
                         # Unwrap to get the underlying model
                         if hasattr(model, "unwrap"):
                             model = model.unwrap()
+                            # CRITICAL: Update the reference
+                            self.model_runner.model = model
+            except Exception as e:
+                logger.warning(f"Error unwrapping model: {e}")
 
-                    # Delete the model itself - AGGRESSIVELY
+            # Step 2: Delete model parameters and buffers
+            try:
+                if hasattr(self.model_runner, "model") and self.model_runner.model is not None:
+                    model = self.model_runner.model
                     logger.info(f"Deleting model, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
 
-                    # First, explicitly delete all parameters and buffers
+                    # Delete parameters - don't modify param.data, just delete the param objects
                     if hasattr(model, 'parameters'):
-                        logger.info("Explicitly deleting all model parameters")
+                        logger.info("Deleting all model parameters")
                         param_count = 0
                         for param in list(model.parameters()):
-                            param.data = None
                             del param
                             param_count += 1
                         logger.info(f"Deleted {param_count} parameters")
 
+                    # Delete buffers
                     if hasattr(model, 'buffers'):
-                        logger.info("Explicitly deleting all model buffers")
+                        logger.info("Deleting all model buffers")
                         buffer_count = 0
                         for buffer in list(model.buffers()):
-                            buffer.data = None
                             del buffer
                             buffer_count += 1
                         logger.info(f"Deleted {buffer_count} buffers")
 
-                    # Delete all named parameters and buffers
+                    # Clear internal module dictionaries
                     if hasattr(model, '_parameters'):
                         model._parameters.clear()
                     if hasattr(model, '_buffers'):
@@ -659,44 +667,51 @@ class Worker(WorkerBase):
                     if hasattr(model, '_modules'):
                         model._modules.clear()
 
-                    # Now delete the model reference
+                    # Delete the model
                     del model
                     self.model_runner.model = None
-
-                    # Force garbage collection
                     gc.collect()
                     logger.info(f"After deleting model, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
+            except Exception as e:
+                logger.warning(f"Error deleting model: {e}")
 
-                # Clear other model runner caches
-                if hasattr(self.model_runner, "kv_caches"):
+            # Step 3: CRITICAL - Delete KV caches (this is ~36 GiB!)
+            try:
+                if hasattr(self.model_runner, "kv_caches") and self.model_runner.kv_caches:
                     logger.info(f"Clearing {len(self.model_runner.kv_caches)} KV caches")
                     for cache in self.model_runner.kv_caches:
                         del cache
                     self.model_runner.kv_caches = []
                     gc.collect()
+                    logger.info(f"After deleting KV caches, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
+            except Exception as e:
+                logger.warning(f"Error clearing KV caches: {e}")
 
-                # Clear ALL model runner attributes to break any circular references
+            # Step 4: Clear torch compile caches
+            try:
+                torch._dynamo.reset()
+                logger.info("Cleared torch dynamo cache")
+            except Exception as e:
+                logger.debug(f"Error clearing dynamo cache: {e}")
+
+            # Step 5: Clear ALL model runner attributes
+            try:
                 for attr in list(vars(self.model_runner).keys()):
                     try:
                         delattr(self.model_runner, attr)
                     except Exception:
                         pass
+            except Exception as e:
+                logger.debug(f"Error clearing model_runner attributes: {e}")
 
-                # Clear torch compile caches
-                try:
-                    # Clear dynamo caches which hold compiled code
-                    torch._dynamo.reset()
-                    logger.info("Cleared torch dynamo cache")
-                except Exception as e:
-                    logger.debug(f"Error clearing dynamo cache: {e}")
-
-                # Delete the entire model runner
+            # Step 6: Delete model runner
+            try:
                 del self.model_runner
                 self.model_runner = None
                 gc.collect()
                 logger.info(f"After deleting model_runner, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
             except Exception as e:
-                logger.warning(f"Error cleaning up model runner: {e}")
+                logger.warning(f"Error deleting model runner: {e}")
 
         # Clear sleep saved buffers
         if hasattr(self, "_sleep_saved_buffers"):
@@ -713,6 +728,9 @@ class Worker(WorkerBase):
             logger.info("Destroying distributed groups")
             destroy_model_parallel()
             destroy_distributed_environment()
+            # Note: destroy_distributed_environment already calls
+            # torch.distributed.destroy_process_group() internally
+            logger.info("Distributed groups destroyed")
         except Exception as e:
             logger.debug(f"Error destroying distributed environment: {e}")
 
