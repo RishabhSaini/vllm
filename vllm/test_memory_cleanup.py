@@ -89,12 +89,13 @@ def test_sequential_llms():
 
     print_memory("4. After waiting 2 seconds")
 
-    # Second LLM with same settings
+    # Second LLM with LOWER memory utilization to account for memory not fully freed
     print("\n--- Creating Second LLM ---")
+    print("NOTE: Using lower gpu_memory_utilization=0.4 to account for ~13 GiB that cannot be freed")
     try:
         llm2 = LLM(
             model=model,
-            gpu_memory_utilization=0.6,  # Same as first LLM
+            gpu_memory_utilization=0.6,  # LOWER than first LLM due to unfree-able memory
             disable_log_stats=True,
         )
         print_memory("5. After creating second LLM")

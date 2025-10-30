@@ -598,7 +598,7 @@ class Worker(WorkerBase):
         if hasattr(self, "model_runner") and self.model_runner is not None:
             try:
                 # Clear CUDA graphs first (they hold references to GPU memory)
-                if hasattr(self.model_runner, "model"):
+                if hasattr(self.model_runner, "model") and self.model_runner.model is not None:
                     model = self.model_runner.model
 
                     # Clear wrappers and CUDA graphs
@@ -629,10 +629,41 @@ class Worker(WorkerBase):
                         if hasattr(model, "unwrap"):
                             model = model.unwrap()
 
-                    # Delete the model itself
+                    # Delete the model itself - AGGRESSIVELY
                     logger.info(f"Deleting model, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
+
+                    # First, explicitly delete all parameters and buffers
+                    if hasattr(model, 'parameters'):
+                        logger.info("Explicitly deleting all model parameters")
+                        param_count = 0
+                        for param in list(model.parameters()):
+                            param.data = None
+                            del param
+                            param_count += 1
+                        logger.info(f"Deleted {param_count} parameters")
+
+                    if hasattr(model, 'buffers'):
+                        logger.info("Explicitly deleting all model buffers")
+                        buffer_count = 0
+                        for buffer in list(model.buffers()):
+                            buffer.data = None
+                            del buffer
+                            buffer_count += 1
+                        logger.info(f"Deleted {buffer_count} buffers")
+
+                    # Delete all named parameters and buffers
+                    if hasattr(model, '_parameters'):
+                        model._parameters.clear()
+                    if hasattr(model, '_buffers'):
+                        model._buffers.clear()
+                    if hasattr(model, '_modules'):
+                        model._modules.clear()
+
+                    # Now delete the model reference
+                    del model
                     self.model_runner.model = None
-                    del self.model_runner.model
+
+                    # Force garbage collection
                     gc.collect()
                     logger.info(f"After deleting model, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
 
@@ -712,6 +743,13 @@ class Worker(WorkerBase):
                 gc.collect()
                 torch.cuda.empty_cache()
 
+                # Clean up IPC handles - this is critical for freeing shared memory
+                try:
+                    torch.cuda.ipc_collect()
+                    logger.info("Cleaned up CUDA IPC handles")
+                except Exception as e:
+                    logger.debug(f"Error cleaning up IPC handles: {e}")
+
                 # NUCLEAR OPTION: Reset the CUDA caching allocator
                 # This forces PyTorch to release ALL cached memory back to the GPU
                 try:
@@ -722,12 +760,27 @@ class Worker(WorkerBase):
                     torch.cuda.memory.reset_max_memory_allocated(device_idx)
                     torch.cuda.memory.reset_max_memory_cached(device_idx)
 
-                    # Try to empty IPC memory handles
+                    # Try to empty IPC memory handles again
                     torch.cuda.memory.empty_cache()
 
                     logger.info("Reset CUDA caching allocator")
                 except Exception as e:
                     logger.debug(f"Error resetting CUDA allocator: {e}")
+
+                # Try to clean up CuMemAllocator if it was used
+                try:
+                    from vllm.device_allocator.cumem import CuMemAllocator, cumem_available
+                    if cumem_available and CuMemAllocator.instance is not None:
+                        allocator = CuMemAllocator.instance
+                        # Force cleanup of all allocations
+                        logger.info("Cleaning up CuMemAllocator singleton")
+                        allocator.pointer_to_data.clear()
+                        allocator.allocator_and_pools.clear()
+                        # Reset the singleton so next LLM gets a fresh instance
+                        CuMemAllocator.instance = None
+                        logger.info("Reset CuMemAllocator singleton")
+                except Exception as e:
+                    logger.debug(f"Error cleaning up CuMemAllocator: {e}")
 
                 # Force one more GC + cache clear
                 gc.collect()
