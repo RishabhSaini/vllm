@@ -576,6 +576,58 @@ class Worker(WorkerBase):
         # worker will always be healthy as long as it's running.
         return
 
+    def shutdown(self) -> None:
+        """Clean up GPU resources and distributed state."""
+        logger.debug("Shutting down GPU worker")
+
+        # Stop profiler if running
+        if hasattr(self, "profiler") and self.profiler is not None:
+            try:
+                self.profiler.stop()
+            except Exception as e:
+                logger.debug(f"Error stopping profiler: {e}")
+
+        # Clean up model runner
+        if hasattr(self, "model_runner") and self.model_runner is not None:
+            try:
+                # Delete the model to free GPU memory
+                if hasattr(self.model_runner, "model"):
+                    del self.model_runner.model
+                del self.model_runner
+                self.model_runner = None
+            except Exception as e:
+                logger.debug(f"Error cleaning up model runner: {e}")
+
+        # Clear sleep saved buffers
+        if hasattr(self, "_sleep_saved_buffers"):
+            self._sleep_saved_buffers.clear()
+
+        # Synchronize and clear CUDA cache
+        if self.device and self.device.type == "cuda":
+            try:
+                torch.cuda.synchronize(self.device)
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats(self.device)
+            except Exception as e:
+                logger.debug(f"Error clearing CUDA cache: {e}")
+
+        # Destroy distributed groups
+        try:
+            from vllm.distributed import (
+                destroy_distributed_environment,
+                destroy_model_parallel,
+            )
+
+            destroy_model_parallel()
+            destroy_distributed_environment()
+        except Exception as e:
+            logger.debug(f"Error destroying distributed environment: {e}")
+
+        # Force garbage collection
+        gc.collect()
+
+        logger.debug("GPU worker shutdown completed")
+
     def _eplb_before_scale_down(self, old_ep_size: int, new_ep_size: int) -> None:
         from vllm.distributed.parallel_state import get_ep_group
 

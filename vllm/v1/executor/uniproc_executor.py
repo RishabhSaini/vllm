@@ -101,8 +101,42 @@ class UniProcExecutor(Executor):
             self.shutdown()
 
     def shutdown(self) -> None:
-        if worker := self.driver_worker:
-            worker.shutdown()
+        """Shutdown the executor and clean up all resources."""
+        if not hasattr(self, "_shutdown_called"):
+            self._shutdown_called = True
+
+            logger.debug("Shutting down UniProcExecutor")
+
+            # Shutdown async output thread pool first
+            if hasattr(self, "async_output_thread") and self.async_output_thread is not None:
+                try:
+                    self.async_output_thread.shutdown(wait=True, cancel_futures=True)
+                except Exception as e:
+                    logger.debug(f"Error shutting down async output thread: {e}")
+                self.async_output_thread = None
+
+            # Shutdown the worker
+            if hasattr(self, "driver_worker") and self.driver_worker is not None:
+                try:
+                    self.driver_worker.shutdown()
+                except Exception as e:
+                    logger.warning(f"Error shutting down driver worker: {e}")
+                self.driver_worker = None
+
+            # Force garbage collection
+            import gc
+            gc.collect()
+
+            # Clear CUDA cache if available
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+            except Exception as e:
+                logger.debug(f"Error clearing CUDA cache: {e}")
+
+            logger.debug("UniProcExecutor shutdown completed")
 
 
 class ExecutorWithExternalLauncher(UniProcExecutor):

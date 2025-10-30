@@ -408,9 +408,69 @@ class LLMEngine:
     def apply_model(self, func: Callable[[nn.Module], _R]) -> list[_R]:
         return self.collective_rpc("apply_model", args=(func,))
 
+    def shutdown(self) -> None:
+        """Shutdown the engine and release all resources.
+
+        This method ensures proper cleanup of:
+        - Engine core and workers
+        - Distributed communication groups
+        - GPU memory and CUDA resources
+        - Logger managers
+        """
+        if not hasattr(self, "_shutdown_called"):
+            self._shutdown_called = True
+
+            logger.debug("Shutting down LLMEngine")
+
+            # Shutdown logger manager first
+            if hasattr(self, "logger_manager") and self.logger_manager is not None:
+                try:
+                    self.logger_manager.shutdown()
+                except Exception as e:
+                    logger.warning(f"Error shutting down logger manager: {e}")
+                self.logger_manager = None
+
+            # Shutdown engine core (this will shutdown executor and workers)
+            if hasattr(self, "engine_core") and self.engine_core is not None:
+                try:
+                    self.engine_core.shutdown()
+                except Exception as e:
+                    logger.warning(f"Error shutting down engine core: {e}")
+                self.engine_core = None
+
+            # Cleanup data parallel group if we created it
+            if hasattr(self, "dp_group") and self.dp_group is not None:
+                if not self.external_launcher_dp:
+                    try:
+                        stateless_destroy_torch_distributed_process_group(self.dp_group)
+                    except Exception as e:
+                        logger.warning(f"Error destroying dp_group: {e}")
+                self.dp_group = None
+
+            # Clear processor references
+            self.processor = None
+            self.output_processor = None
+
+            # Force garbage collection
+            import gc
+            gc.collect()
+
+            # Clear CUDA cache if available
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+            except Exception as e:
+                logger.debug(f"Error clearing CUDA cache: {e}")
+
+            logger.debug("LLMEngine shutdown completed")
+
     def __del__(self):
-        if (
-            dp_group := getattr(self, "dp_group", None)
-            and not self.external_launcher_dp
-        ):
-            stateless_destroy_torch_distributed_process_group(dp_group)
+        """Destructor to ensure resources are cleaned up."""
+        if not hasattr(self, "_shutdown_called"):
+            try:
+                self.shutdown()
+            except Exception as e:
+                # Log but don't raise during destruction
+                logger.warning(f"Error during LLMEngine cleanup in __del__: {e}")

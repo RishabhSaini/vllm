@@ -1205,3 +1205,15 @@ class StatLoggerManager:
     def log_engine_initialized(self):
         for agg_logger in self.stat_loggers:
             agg_logger.log_engine_initialized()
+
+    def shutdown(self):
+        """Cleanup resources used by stat loggers."""
+        # Unregister Prometheus metrics to prevent memory leaks
+        # when running multiple LLM instances in the same process
+        try:
+            unregister_vllm_metrics()
+        except Exception as e:
+            logger.debug(f"Error unregistering Prometheus metrics: {e}")
+
+        # Clear logger references
+        self.stat_loggers.clear()

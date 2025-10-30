@@ -1542,6 +1542,45 @@ class LLM:
         """
         return self.llm_engine.get_metrics()
 
+    def shutdown(self) -> None:
+        """Explicitly shutdown the LLM and release all resources.
+
+        This method should be called when you're done using the LLM to ensure
+        proper cleanup of GPU memory, distributed communication groups, and
+        worker processes. It's automatically called during garbage collection
+        via __del__, but explicit calls are recommended for immediate resource
+        release, especially when running multiple LLMs sequentially.
+        """
+        if not hasattr(self, "_shutdown_called"):
+            self._shutdown_called = True
+
+            # Shutdown the engine
+            if hasattr(self, "llm_engine") and self.llm_engine is not None:
+                logger.debug("Shutting down LLM engine")
+                self.llm_engine.shutdown()
+                self.llm_engine = None
+
+            # Clear references
+            self.processor = None
+            self.io_processor = None
+            self.model_config = None
+
+            # Force garbage collection to clean up any remaining references
+            import gc
+            gc.collect()
+
+            logger.debug("LLM shutdown completed")
+
+    def __del__(self) -> None:
+        """Destructor to ensure resources are cleaned up on object deletion."""
+        # Only call shutdown if it hasn't been called yet
+        if not hasattr(self, "_shutdown_called"):
+            try:
+                self.shutdown()
+            except Exception as e:
+                # Log but don't raise during destruction
+                logger.warning(f"Error during LLM cleanup in __del__: {e}")
+
     def _validate_and_add_requests(
         self,
         prompts: PromptType | Sequence[PromptType] | DataPrompt,
