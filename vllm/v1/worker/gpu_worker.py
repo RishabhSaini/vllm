@@ -578,7 +578,7 @@ class Worker(WorkerBase):
 
     def shutdown(self) -> None:
         """Clean up GPU resources and distributed state."""
-        logger.debug("Shutting down GPU worker")
+        logger.info("Shutting down GPU worker")
 
         # Stop profiler if running
         if hasattr(self, "profiler") and self.profiler is not None:
@@ -587,46 +587,123 @@ class Worker(WorkerBase):
             except Exception as e:
                 logger.debug(f"Error stopping profiler: {e}")
 
-        # Clean up model runner
+        # Clean up model runner and free GPU memory
         if hasattr(self, "model_runner") and self.model_runner is not None:
             try:
-                # Delete the model to free GPU memory
+                # Clear CUDA graphs first (they hold references to GPU memory)
                 if hasattr(self.model_runner, "model"):
+                    model = self.model_runner.model
+
+                    # Clear wrappers and CUDA graphs
+                    from vllm.compilation.cuda_graph import CUDAGraphWrapper
+                    from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
+
+                    # Unwrap and clean up UBatchWrapper if present
+                    if isinstance(model, UBatchWrapper):
+                        logger.info("Unwrapping UBatchWrapper")
+                        if hasattr(model, "unwrap"):
+                            model = model.unwrap()
+
+                    # Clear CUDA graphs if model is wrapped in CUDAGraphWrapper
+                    if isinstance(model, CUDAGraphWrapper):
+                        logger.info("Clearing CUDA graphs")
+                        # Clear all CUDA graph entries (they hold GPU memory)
+                        if hasattr(model, "concrete_cudagraph_entries"):
+                            for entry in model.concrete_cudagraph_entries.values():
+                                # Delete the CUDA graph itself
+                                if entry.cudagraph is not None:
+                                    del entry.cudagraph
+                                # Delete cached outputs
+                                if entry.output is not None:
+                                    del entry.output
+                            model.concrete_cudagraph_entries.clear()
+
+                        # Unwrap to get the underlying model
+                        if hasattr(model, "unwrap"):
+                            model = model.unwrap()
+
+                    # Delete the model itself
                     del self.model_runner.model
+                    self.model_runner.model = None
+
+                # Clear other model runner caches
+                if hasattr(self.model_runner, "kv_caches"):
+                    for cache in self.model_runner.kv_caches:
+                        del cache
+                    self.model_runner.kv_caches = []
+
+                # Clear torch compile caches
+                try:
+                    # Clear dynamo caches which hold compiled code
+                    torch._dynamo.reset()
+                except Exception as e:
+                    logger.debug(f"Error clearing dynamo cache: {e}")
+
+                # Delete the entire model runner
                 del self.model_runner
                 self.model_runner = None
             except Exception as e:
-                logger.debug(f"Error cleaning up model runner: {e}")
+                logger.warning(f"Error cleaning up model runner: {e}")
 
         # Clear sleep saved buffers
         if hasattr(self, "_sleep_saved_buffers"):
             self._sleep_saved_buffers.clear()
 
-        # Synchronize and clear CUDA cache
-        if self.device and self.device.type == "cuda":
-            try:
-                torch.cuda.synchronize(self.device)
-                torch.cuda.empty_cache()
-                torch.cuda.reset_peak_memory_stats(self.device)
-            except Exception as e:
-                logger.debug(f"Error clearing CUDA cache: {e}")
-
-        # Destroy distributed groups
+        # Destroy distributed groups BEFORE clearing CUDA cache
+        # This ensures NCCL doesn't interfere with memory cleanup
         try:
             from vllm.distributed import (
                 destroy_distributed_environment,
                 destroy_model_parallel,
             )
 
+            logger.info("Destroying distributed groups")
             destroy_model_parallel()
             destroy_distributed_environment()
         except Exception as e:
             logger.debug(f"Error destroying distributed environment: {e}")
 
-        # Force garbage collection
+        # Clear the global CUDA graph pool
+        try:
+            from vllm.platforms import current_platform
+            graph_pool = current_platform.get_global_graph_pool()
+            if graph_pool is not None:
+                logger.info("Clearing global CUDA graph pool")
+                graph_pool.clear()
+        except Exception as e:
+            logger.debug(f"Error clearing global graph pool: {e}")
+
+        # Synchronize and clear CUDA cache multiple times for thorough cleanup
+        if self.device and self.device.type == "cuda":
+            try:
+                logger.info("Clearing CUDA cache")
+                # Synchronize to ensure all CUDA operations are complete
+                torch.cuda.synchronize(self.device)
+
+                # Force garbage collection before clearing cache
+                gc.collect()
+
+                # Clear CUDA cache
+                torch.cuda.empty_cache()
+
+                # Do it again for good measure
+                gc.collect()
+                torch.cuda.empty_cache()
+
+                # Reset memory stats
+                torch.cuda.reset_peak_memory_stats(self.device)
+                torch.cuda.reset_accumulated_memory_stats(self.device)
+
+                # Log memory status
+                free_memory, total_memory = torch.cuda.mem_get_info(self.device)
+                logger.info(f"After cleanup: {free_memory / 1024**3:.2f} GiB / {total_memory / 1024**3:.2f} GiB free")
+            except Exception as e:
+                logger.debug(f"Error clearing CUDA cache: {e}")
+
+        # Final garbage collection
         gc.collect()
 
-        logger.debug("GPU worker shutdown completed")
+        logger.info("GPU worker shutdown completed")
 
     def _eplb_before_scale_down(self, old_ep_size: int, new_ep_size: int) -> None:
         from vllm.distributed.parallel_state import get_ep_group
