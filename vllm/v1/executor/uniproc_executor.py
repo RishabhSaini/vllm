@@ -117,11 +117,18 @@ class UniProcExecutor(Executor):
                 self.async_output_thread = None
 
             # Shutdown the worker
+            print(f"Has driver_worker: {hasattr(self, 'driver_worker')}")
+            if hasattr(self, "driver_worker"):
+                print(f"driver_worker is None: {self.driver_worker is None}")
             if hasattr(self, "driver_worker") and self.driver_worker is not None:
                 try:
+                    print("Calling driver_worker.shutdown()...")
                     self.driver_worker.shutdown()
+                    print("driver_worker.shutdown() completed")
                 except Exception as e:
                     logger.warning(f"Error shutting down driver worker: {e}")
+                    import traceback
+                    traceback.print_exc()
                 self.driver_worker = None
 
             # Force garbage collection

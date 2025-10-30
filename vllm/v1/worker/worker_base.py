@@ -195,8 +195,11 @@ class WorkerWrapperBase:
             init_cached_hf_modules()
 
     def shutdown(self) -> None:
+        print(f"WorkerWrapperBase.shutdown() called! worker is None: {self.worker is None}")
         if self.worker is not None:
+            print("Calling worker.shutdown()...")
             self.worker.shutdown()
+            print("worker.shutdown() completed")
 
     def adjust_rank(self, rank_mapping: dict[int, int]) -> None:
         """
