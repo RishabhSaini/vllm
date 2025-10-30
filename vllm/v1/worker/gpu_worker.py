@@ -580,6 +580,13 @@ class Worker(WorkerBase):
         """Clean up GPU resources and distributed state."""
         logger.info("Shutting down GPU worker")
 
+        # Ensure KV transfer is shutdown if active
+        if runner := getattr(self, "model_runner", None):
+            try:
+                runner.ensure_kv_transfer_shutdown()
+            except Exception as e:
+                logger.debug(f"Error shutting down KV transfer: {e}")
+
         # Stop profiler if running
         if hasattr(self, "profiler") and self.profiler is not None:
             try:
@@ -915,10 +922,6 @@ class Worker(WorkerBase):
         self.model_runner.save_tensorized_model(
             tensorizer_config=tensorizer_config,
         )
-
-    def shutdown(self) -> None:
-        if runner := getattr(self, "model_runner", None):
-            runner.ensure_kv_transfer_shutdown()
 
 
 def init_worker_distributed_environment(
