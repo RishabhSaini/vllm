@@ -676,13 +676,33 @@ class Worker(WorkerBase):
                 logger.warning(f"Error deleting model: {e}")
 
             # Step 3: CRITICAL - Delete KV caches (this is ~36 GiB!)
+            # KV caches are held in MULTIPLE places that all need to be cleared:
+            # 1. self.model_runner.kv_caches list
+            # 2. compilation_config.static_forward_context (GLOBAL dict!)
+            # 3. Each Attention layer's kv_cache attribute
             try:
                 if hasattr(self.model_runner, "kv_caches") and self.model_runner.kv_caches:
-                    logger.info(f"Clearing {len(self.model_runner.kv_caches)} KV caches")
+                    logger.info(f"Clearing {len(self.model_runner.kv_caches)} KV caches from ALL references")
+
+                    # CRITICAL: Clear kv_cache attributes from Attention layers in forward_context
+                    if hasattr(self.model_runner, "compilation_config"):
+                        forward_context = self.model_runner.compilation_config.static_forward_context
+                        if forward_context:
+                            logger.info(f"Clearing kv_cache from {len(forward_context)} layers in static_forward_context")
+                            for layer_name, layer_obj in forward_context.items():
+                                if hasattr(layer_obj, "kv_cache"):
+                                    layer_obj.kv_cache = None
+                            # Clear the entire forward context dictionary
+                            forward_context.clear()
+                            logger.info("Cleared static_forward_context")
+
+                    # Now delete from model_runner's kv_caches list
                     for cache in self.model_runner.kv_caches:
                         del cache
                     self.model_runner.kv_caches = []
+
                     gc.collect()
+                    torch.cuda.empty_cache()
                     logger.info(f"After deleting KV caches, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
             except Exception as e:
                 logger.warning(f"Error clearing KV caches: {e}")
