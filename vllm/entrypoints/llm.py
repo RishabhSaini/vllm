@@ -1554,9 +1554,10 @@ class LLM:
         if not hasattr(self, "_shutdown_called"):
             self._shutdown_called = True
 
+            print("in shutodwn__________________________________________________________")
             # Shutdown the engine
             if hasattr(self, "llm_engine") and self.llm_engine is not None:
-                logger.debug("Shutting down LLM engine")
+                logger.info("Shutting down LLM engine")
                 self.llm_engine.shutdown()
                 self.llm_engine = None
 

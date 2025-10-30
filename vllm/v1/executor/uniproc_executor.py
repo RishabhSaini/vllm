@@ -105,7 +105,8 @@ class UniProcExecutor(Executor):
         if not hasattr(self, "_shutdown_called"):
             self._shutdown_called = True
 
-            logger.debug("Shutting down UniProcExecutor")
+            print("UniProcExecutor.shutdown() called!")
+            logger.info("Shutting down UniProcExecutor")
 
             # Shutdown async output thread pool first
             if hasattr(self, "async_output_thread") and self.async_output_thread is not None:

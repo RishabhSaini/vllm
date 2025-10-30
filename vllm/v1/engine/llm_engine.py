@@ -420,7 +420,8 @@ class LLMEngine:
         if not hasattr(self, "_shutdown_called"):
             self._shutdown_called = True
 
-            logger.debug("Shutting down LLMEngine")
+            print("LLMEngine.shutdown() called!")
+            logger.info("Shutting down LLMEngine")
 
             # Shutdown logger manager first
             if hasattr(self, "logger_manager") and self.logger_manager is not None:

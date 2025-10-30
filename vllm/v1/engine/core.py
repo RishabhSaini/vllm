@@ -387,8 +387,10 @@ class EngineCore:
         return engine_core_outputs, model_executed
 
     def shutdown(self):
+        print("EngineCore.shutdown() called!")
         self.structured_output_manager.clear_backend()
         if self.model_executor:
+            print("Calling model_executor.shutdown()...")
             self.model_executor.shutdown()
         if self.scheduler:
             self.scheduler.shutdown()
