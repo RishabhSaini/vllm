@@ -630,25 +630,40 @@ class Worker(WorkerBase):
                             model = model.unwrap()
 
                     # Delete the model itself
-                    del self.model_runner.model
+                    logger.info(f"Deleting model, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
                     self.model_runner.model = None
+                    del self.model_runner.model
+                    gc.collect()
+                    logger.info(f"After deleting model, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
 
                 # Clear other model runner caches
                 if hasattr(self.model_runner, "kv_caches"):
+                    logger.info(f"Clearing {len(self.model_runner.kv_caches)} KV caches")
                     for cache in self.model_runner.kv_caches:
                         del cache
                     self.model_runner.kv_caches = []
+                    gc.collect()
+
+                # Clear ALL model runner attributes to break any circular references
+                for attr in list(vars(self.model_runner).keys()):
+                    try:
+                        delattr(self.model_runner, attr)
+                    except Exception:
+                        pass
 
                 # Clear torch compile caches
                 try:
                     # Clear dynamo caches which hold compiled code
                     torch._dynamo.reset()
+                    logger.info("Cleared torch dynamo cache")
                 except Exception as e:
                     logger.debug(f"Error clearing dynamo cache: {e}")
 
                 # Delete the entire model runner
                 del self.model_runner
                 self.model_runner = None
+                gc.collect()
+                logger.info(f"After deleting model_runner, current memory: {torch.cuda.memory_allocated(self.device) / 1024**3:.2f} GiB")
             except Exception as e:
                 logger.warning(f"Error cleaning up model runner: {e}")
 
@@ -694,6 +709,27 @@ class Worker(WorkerBase):
                 torch.cuda.empty_cache()
 
                 # Do it again for good measure
+                gc.collect()
+                torch.cuda.empty_cache()
+
+                # NUCLEAR OPTION: Reset the CUDA caching allocator
+                # This forces PyTorch to release ALL cached memory back to the GPU
+                try:
+                    # Get current device index
+                    device_idx = self.device.index if self.device.index is not None else torch.cuda.current_device()
+
+                    # Reset the caching allocator - this frees all cached blocks
+                    torch.cuda.memory.reset_max_memory_allocated(device_idx)
+                    torch.cuda.memory.reset_max_memory_cached(device_idx)
+
+                    # Try to empty IPC memory handles
+                    torch.cuda.memory.empty_cache()
+
+                    logger.info("Reset CUDA caching allocator")
+                except Exception as e:
+                    logger.debug(f"Error resetting CUDA allocator: {e}")
+
+                # Force one more GC + cache clear
                 gc.collect()
                 torch.cuda.empty_cache()
 
