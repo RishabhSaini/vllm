@@ -77,7 +77,7 @@ def main():
     sub.setsockopt_string(zmq.SUBSCRIBE, topic)
 
     # Initialize replay socket
-    replay = context.socket(zmq.REQ)
+    replay = context.socket(zmq.DEALER)
     replay.connect("tcp://localhost:5558")
     poller = zmq.Poller()
     poller.register(replay, zmq.POLLIN)
@@ -96,15 +96,18 @@ def main():
                         f"Missed {missed} messages (last: {last_seq}, current: {seq})"
                     )
 
-                    replay.send((last_seq + 1).to_bytes(8, "big"))
+                    replay.send_multipart([b"", (last_seq + 1).to_bytes(8, "big")])
 
                     while poller.poll(timeout=200):
-                        _, seq_bytes, replay_payload = replay.recv_multipart()
-                        if not replay_payload:
+                        frames = replay.recv_multipart()
+                        if frames and frames[0] == b"":
+                            frames = frames[1:]
+                        if len(frames) != 3 or not frames[-1]:
                             # End of replay marker is sent as an empty frame
                             # for the payload
                             break
 
+                        _, seq_bytes, replay_payload = frames
                         replay_seq = int.from_bytes(seq_bytes, "big")
 
                         if replay_seq > last_seq:

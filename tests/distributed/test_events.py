@@ -88,12 +88,11 @@ def test_replay_mechanism(publisher, subscriber):
 
     replayed = subscriber.receive_replay()
 
-    assert len(replayed) > 0, "No replayed messages received"
-    seqs = [seq for seq, _ in replayed]
-    assert all(seq >= 10 for seq in seqs), "Replayed messages not in order"
-    assert seqs == list(range(min(seqs), max(seqs) + 1)), (
-        "Replayed messages not consecutive"
+    assert len(replayed) == 10, (
+        f"Expected 10 replayed messages (seq 10-19), got {len(replayed)}"
     )
+    seqs = [seq for seq, _ in replayed]
+    assert seqs == list(range(10, 20)), "Replayed sequences should be 10-19"
 
 
 def test_buffer_limit(publisher, subscriber, publisher_config):
@@ -113,10 +112,14 @@ def test_buffer_limit(publisher, subscriber, publisher_config):
 
     replayed = subscriber.receive_replay()
 
-    assert len(replayed) <= buffer_size, "Can't replay more than buffer size"
+    assert len(replayed) == buffer_size, (
+        f"Expected {buffer_size} replayed messages, got {len(replayed)}"
+    )
 
-    oldest_seq = min(seq for seq, _ in replayed)
-    assert oldest_seq >= 10, "The oldest sequence should be at least 10"
+    seqs = [seq for seq, _ in replayed]
+    assert seqs == list(range(11, buffer_size + 11)), (
+        "Should replay seq 11 through buffer_size+10"
+    )
 
 
 def test_topic_filtering(publisher_config):
